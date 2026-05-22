@@ -30,6 +30,19 @@ FEATURE_COLS = [
 
 DATA_PATH = Path(__file__).resolve().parent.parent / "data" / "mainDB.csv"
 
+# Map curly/smart punctuation to ASCII so user input matches dataset entries.
+_PUNCT_NORMALIZE = str.maketrans({
+    "‘": "'", "’": "'", "‚": "'", "‛": "'",
+    "“": '"', "”": '"', "„": '"', "‟": '"',
+    "–": "-", "—": "-", "―": "-",
+    " ": " ",
+})
+
+
+def _normalize(text: str) -> str:
+    return text.translate(_PUNCT_NORMALIZE).strip().lower()
+
+
 state: dict = {}
 
 
@@ -44,8 +57,8 @@ async def lifespan(_: FastAPI):
         usecols=["song_name", "artist", "popularity", *FEATURE_COLS],
     )
     df = df.dropna(subset=FEATURE_COLS + ["song_name", "artist"]).reset_index(drop=True)
-    df["song_name_lower"] = df["song_name"].astype(str).str.strip().str.lower()
-    df["artist_lower"] = df["artist"].astype(str).str.strip().str.lower()
+    df["song_name_lower"] = df["song_name"].astype(str).map(_normalize)
+    df["artist_lower"] = df["artist"].astype(str).map(_normalize)
 
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(df[FEATURE_COLS].astype(np.float32).to_numpy()).astype(np.float32)
@@ -119,8 +132,8 @@ def recommend(req: RecommendRequest) -> RecommendResponse:
     X_scaled: np.ndarray = state["X_scaled"]
     knn: NearestNeighbors = state["knn"]
 
-    name_q = req.track_name.strip().lower()
-    artist_q = (req.artist_name or "").strip().lower()
+    name_q = _normalize(req.track_name)
+    artist_q = _normalize(req.artist_name or "")
 
     mask = df["song_name_lower"] == name_q
     if artist_q:

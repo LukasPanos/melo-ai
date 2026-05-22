@@ -76,8 +76,8 @@ export default function Home() {
             </button>
           </div>
           <p className="text-xs text-white/40 mt-3">
-            Songs must exist in the library — try “Welcome To New York (Taylor’s
-            Version)” by Taylor Swift, or “Blinding Lights” by The Weeknd.
+            Songs must exist in the library — try "Welcome To New York (Taylor's
+            Version)" by Taylor Swift, or "Blinding Lights" by The Weeknd.
           </p>
         </form>
 
