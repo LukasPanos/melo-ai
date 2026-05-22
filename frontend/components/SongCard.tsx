@@ -1,5 +1,8 @@
+"use client";
+
 import type { Song } from "@/lib/api";
 import { FeatureBars } from "./FeatureBars";
+import { previewKey, usePreviewPlayer } from "./PreviewPlayer";
 
 type Props = {
   song: Song;
@@ -9,6 +12,9 @@ type Props = {
 
 export function SongCard({ song, rank, isInput }: Props) {
   const similarityPct = Math.round(song.similarity * 100);
+  const { statusFor, toggle } = usePreviewPlayer();
+  const key = previewKey(song.name, song.artist);
+  const status = statusFor(key);
 
   return (
     <div
@@ -42,16 +48,23 @@ export function SongCard({ song, rank, isInput }: Props) {
             {song.artist}
           </p>
         </div>
-        {!isInput && (
-          <div className="shrink-0 text-right">
-            <div className="text-xl font-bold bg-gradient-to-r from-melo to-melo-neon bg-clip-text text-transparent">
-              {similarityPct}%
+
+        <div className="shrink-0 flex flex-col items-end gap-2">
+          <PreviewButton
+            status={status}
+            onClick={() => toggle(key, song.name, song.artist)}
+          />
+          {!isInput && (
+            <div className="text-right leading-tight">
+              <div className="text-xl font-bold bg-gradient-to-r from-melo to-melo-neon bg-clip-text text-transparent">
+                {similarityPct}%
+              </div>
+              <div className="text-[10px] uppercase tracking-wider text-white/40">
+                match
+              </div>
             </div>
-            <div className="text-[10px] uppercase tracking-wider text-white/40">
-              match
-            </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       <FeatureBars features={song.features} />
@@ -72,5 +85,65 @@ export function SongCard({ song, rank, isInput }: Props) {
         Open in Spotify
       </a>
     </div>
+  );
+}
+
+function PreviewButton({
+  status,
+  onClick,
+}: {
+  status: "idle" | "loading" | "playing" | "no-preview";
+  onClick: () => void;
+}) {
+  const isMissing = status === "no-preview";
+  const isPlaying = status === "playing";
+  const isLoading = status === "loading";
+
+  const baseClasses =
+    "h-10 w-10 rounded-full flex items-center justify-center transition-all shadow-md focus:outline-none focus:ring-2 focus:ring-melo/50";
+  const stateClasses = isMissing
+    ? "bg-white/5 text-white/30 cursor-not-allowed shadow-none"
+    : isPlaying
+    ? "bg-gradient-to-br from-melo-neon to-melo text-ink-900 shadow-melo/40 scale-105"
+    : "bg-gradient-to-br from-melo to-melo-dim text-white hover:scale-105 shadow-melo/30";
+
+  return (
+    <button
+      type="button"
+      onClick={isMissing ? undefined : onClick}
+      disabled={isMissing}
+      aria-label={
+        isMissing
+          ? "No preview available"
+          : isPlaying
+          ? "Pause preview"
+          : "Play 30-second preview"
+      }
+      title={
+        isMissing
+          ? "No preview available"
+          : isPlaying
+          ? "Pause preview"
+          : "Play 30-second preview"
+      }
+      className={`${baseClasses} ${stateClasses}`}
+    >
+      {isLoading ? (
+        <span className="h-4 w-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+      ) : isPlaying ? (
+        <svg viewBox="0 0 24 24" className="h-4 w-4 fill-current" aria-hidden>
+          <rect x="6" y="5" width="4" height="14" rx="1" />
+          <rect x="14" y="5" width="4" height="14" rx="1" />
+        </svg>
+      ) : isMissing ? (
+        <svg viewBox="0 0 24 24" className="h-4 w-4 fill-current" aria-hidden>
+          <path d="M3 3l18 18-1.4 1.4-3-3A8 8 0 015 6.4L3.6 5 3 5.6 3 3zm9 5a4 4 0 00-3.6 5.6L12 17V13a1 1 0 011-1l4-1V8h-5z" />
+        </svg>
+      ) : (
+        <svg viewBox="0 0 24 24" className="h-4 w-4 fill-current ml-0.5" aria-hidden>
+          <path d="M8 5v14l11-7z" />
+        </svg>
+      )}
+    </button>
   );
 }

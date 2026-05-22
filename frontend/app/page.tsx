@@ -4,17 +4,31 @@ import { useState, FormEvent } from "react";
 import { fetchRecommendations, type RecommendResponse } from "@/lib/api";
 import { SongCard } from "@/components/SongCard";
 import { SongSearchInput } from "@/components/SongSearchInput";
+import {
+  PreviewPlayerProvider,
+  usePreviewPlayer,
+} from "@/components/PreviewPlayer";
 
 export default function Home() {
+  return (
+    <PreviewPlayerProvider>
+      <HomeInner />
+    </PreviewPlayerProvider>
+  );
+}
+
+function HomeInner() {
   const [trackName, setTrackName] = useState("");
   const [artistName, setArtistName] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<RecommendResponse | null>(null);
+  const { stop } = usePreviewPlayer();
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!trackName.trim()) return;
+    stop();
     setLoading(true);
     setError(null);
     setData(null);
@@ -78,7 +92,8 @@ export default function Home() {
             </button>
           </div>
           <p className="text-xs text-white/40 mt-3">
-            Start typing a song — only tracks in the library will appear.
+            Start typing a song — only tracks in the library will appear. Tap
+            the ▶ on any card for a 30-second preview.
           </p>
         </form>
 
@@ -122,7 +137,8 @@ export default function Home() {
         </section>
 
         <footer className="mt-20 text-center text-xs text-white/30">
-          Built with FastAPI + scikit-learn KNN · Next.js + Tailwind
+          Built with FastAPI + scikit-learn KNN · Next.js + Tailwind · Previews
+          from iTunes
         </footer>
       </div>
     </main>
