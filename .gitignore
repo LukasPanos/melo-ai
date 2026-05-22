@@ -11,7 +11,9 @@ venv/
 # Raw Kaggle source (1.2 GB) — regenerable, not committed
 data/tracks_features.csv
 
-# Optional parquet build artifact (regenerable from CSV)
+# Optional 500k Kaggle build — regenerable via data_code/build_500k.py,
+# not used by the deployed backend (OOMs Render's 512 MB free tier).
+data/mainDB_500k.csv
 data/*.parquet
 
 # Editor / IDE noise

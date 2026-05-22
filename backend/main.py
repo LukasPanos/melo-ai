@@ -35,8 +35,10 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
 
 def _pick_dataset() -> Path:
-    """Prefer the 500k CSV if present, fall back to the original 268k file."""
-    for candidate in (DATA_DIR / "mainDB_500k.csv", DATA_DIR / "mainDB.csv"):
+    """Use the curated 268k dataset. The 500k Kaggle build is kept around for
+    experimentation but blows the 512 MB free-tier ceiling and has no real
+    Spotify popularity, so it's not the default."""
+    for candidate in (DATA_DIR / "mainDB.csv", DATA_DIR / "mainDB_500k.csv"):
         if candidate.exists():
             return candidate
     raise RuntimeError("No dataset file found in data/")
@@ -113,19 +115,15 @@ async def lifespan(_: FastAPI):
     if "release_year" in df.columns:
         df["release_year"] = df["release_year"].fillna(0).astype("int16")
 
-    # Convert the heavy string columns: Arrow-backed for song_name (high
-    # cardinality, ~3× less memory than Python object strings), Categorical
-    # for artist (heavy repeats compress to codes + lookup table).
-    df["song_name"] = df["song_name"].astype("string[pyarrow]")
+    # Artist becomes Categorical because the column has heavy repeats (codes
+    # + lookup table is ~10× smaller than object strings).
+    df["song_name"] = df["song_name"].astype(str)
     df["artist"] = df["artist"].astype(str).astype("category")
 
-    # Precomputed lowercased name for /search and /recommend. Storing it
-    # explicitly costs ~40 MB but is cheaper than lazy lowercase: pandas
-    # holds onto temporary string buffers across requests, which inflates
-    # the process by 200+ MB under sustained traffic.
-    df["song_name_lower"] = (
-        df["song_name"].astype(str).map(_normalize).astype("string[pyarrow]")
-    )
+    # Precomputed lowercased name for /search and /recommend (lazy lowercase
+    # bloats process memory under sustained traffic from pandas' temporary
+    # string buffers).
+    df["song_name_lower"] = df["song_name"].astype(str).map(_normalize)
 
     gc.collect()
 
