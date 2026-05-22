@@ -87,6 +87,8 @@ async def lifespan(_: FastAPI):
         cols.append("popularity")
     if "release_year" in available:
         cols.append("release_year")
+    genre_cols_present = [c for c in ("genre_1", "genre_2", "genre_3") if c in available]
+    cols.extend(genre_cols_present)
 
     # Chunked CSV load to bound peak working set during parsing.
     feature_dtypes = {col: np.float32 for col in FEATURE_COLS}
@@ -114,6 +116,13 @@ async def lifespan(_: FastAPI):
 
     if "release_year" in df.columns:
         df["release_year"] = df["release_year"].fillna(0).astype("int16")
+
+    # Normalize genres to lowercase Categoricals at load time so per-request
+    # comparison is a cheap code lookup rather than a string scan.
+    for col in genre_cols_present:
+        df[col] = (
+            df[col].fillna("").astype(str).str.strip().str.lower().astype("category")
+        )
 
     # Artist becomes Categorical because the column has heavy repeats (codes
     # + lookup table is ~10× smaller than object strings).
@@ -164,9 +173,6 @@ app.add_middleware(
 class RecommendRequest(BaseModel):
     track_name: str = Field(..., min_length=1)
     artist_name: Optional[str] = ""
-    # 0 means "any era" (no filter). Otherwise, results must be within
-    # ±max_year_diff calendar years of the input song's release year.
-    max_year_diff: int = Field(default=0, ge=0, le=100)
 
 
 class Song(BaseModel):
@@ -176,6 +182,7 @@ class Song(BaseModel):
     similarity: float
     features: dict[str, float]
     release_year: Optional[int] = None
+    genre: Optional[str] = None
 
 
 class RecommendResponse(BaseModel):
@@ -208,6 +215,15 @@ def _row_to_song(row: pd.Series, similarity: float) -> Song:
         year_val = None
     else:
         year_val = int(year_raw)
+
+    genre_val: Optional[str] = None
+    for col in ("genre_1", "genre_2", "genre_3"):
+        if col in row.index:
+            v = row[col]
+            if isinstance(v, str) and v.strip():
+                genre_val = v
+                break
+
     return Song(
         name=str(row["song_name"]),
         artist=str(row["artist"]),
@@ -215,6 +231,7 @@ def _row_to_song(row: pd.Series, similarity: float) -> Song:
         similarity=round(float(similarity), 4),
         features={col: float(row[col]) for col in _DISPLAY_FEATURES if col in row.index},
         release_year=year_val,
+        genre=genre_val,
     )
 
 
@@ -296,49 +313,25 @@ def recommend(req: RecommendRequest) -> RecommendResponse:
     else:
         idx = int(matches[0])
 
-    input_vec = X_scaled[idx].reshape(1, -1)
+    input_vec = X_scaled[idx]
 
-    # When the user wants an era filter, ask KNN for a wider candidate pool
-    # and filter by year after. 200 candidates is plenty: cosine KNN over
-    # 11 features at 500k rows runs in well under 100 ms even at k=200.
-    want_year_filter = (
-        req.max_year_diff > 0
-        and "release_year" in df.columns
-        and int(df.loc[idx, "release_year"]) > 0
-    )
-    k = 200 if want_year_filter else 11
-    distances, indices = knn.kneighbors(input_vec, n_neighbors=k)
+    # Try the genre-constrained path first: gather every song that shares at
+    # least one of the input's three genres, then rank that subset by audio
+    # cosine similarity. This matches the prototype's intent — KNN purely on
+    # audio features tends to cross genre boundaries (pop song -> classical
+    # piano with similar BPM/loudness), which makes recommendations feel off.
+    genre_cols = [c for c in ("genre_1", "genre_2", "genre_3") if c in df.columns]
+    pairs = _genre_filtered_top10(df, X_scaled, idx, input_vec, genre_cols)
 
-    raw_pairs = [
-        (int(i), float(d))
-        for i, d in zip(indices[0], distances[0])
-        if int(i) != idx
-    ]
-
-    if want_year_filter:
-        input_year = int(df.loc[idx, "release_year"])
-        years = df.loc[[p[0] for p in raw_pairs], "release_year"].to_numpy()
-        in_window = np.abs(years - input_year) <= req.max_year_diff
-        # Years stored as 0 mean "unknown" — exclude from in-era results.
-        in_window &= years > 0
-        filtered = [p for p, ok in zip(raw_pairs, in_window) if ok][:10]
-        # If the window is too tight to fill 10 slots, fall back to widening.
-        if len(filtered) < 10:
-            for widen in (req.max_year_diff * 2, req.max_year_diff * 4):
-                widened = [
-                    p
-                    for p, y in zip(raw_pairs, years)
-                    if y > 0 and abs(int(y) - input_year) <= widen
-                ][:10]
-                if len(widened) >= 10:
-                    filtered = widened
-                    break
-            else:
-                # As a last resort, fall back to pure audio similarity.
-                filtered = raw_pairs[:10]
-        pairs = filtered
-    else:
-        pairs = raw_pairs[:10]
+    if pairs is None:
+        # No usable genres on the input, or fewer than 10 in-genre candidates —
+        # fall back to plain audio-only KNN so the user still gets results.
+        distances, indices = knn.kneighbors(input_vec.reshape(1, -1))
+        pairs = [
+            (int(i), float(d))
+            for i, d in zip(indices[0], distances[0])
+            if int(i) != idx
+        ][:10]
 
     recommendations = [
         _row_to_song(df.iloc[i], similarity=1.0 - d) for i, d in pairs
@@ -346,3 +339,49 @@ def recommend(req: RecommendRequest) -> RecommendResponse:
     input_song = _row_to_song(df.iloc[idx], similarity=1.0)
 
     return RecommendResponse(input_song=input_song, recommendations=recommendations)
+
+
+def _genre_filtered_top10(
+    df: pd.DataFrame,
+    X_scaled: np.ndarray,
+    input_idx: int,
+    input_vec: np.ndarray,
+    genre_cols: list[str],
+) -> Optional[list[tuple[int, float]]]:
+    """Return the top-10 most audio-similar songs that share a genre with the
+    input. Returns None if there's no usable genre data or fewer than 10
+    matches (caller falls back to plain KNN)."""
+    if not genre_cols:
+        return None
+
+    input_row = df.iloc[input_idx]
+    input_genres: set[str] = set()
+    for col in genre_cols:
+        v = input_row[col]
+        if isinstance(v, str) and v.strip():
+            input_genres.add(v)
+    if not input_genres:
+        return None
+
+    mask = np.zeros(len(df), dtype=bool)
+    for col in genre_cols:
+        mask |= df[col].isin(input_genres).to_numpy()
+    mask[input_idx] = False
+
+    candidate_idx = np.flatnonzero(mask)
+    if candidate_idx.size < 10:
+        return None
+
+    # Cosine distance vectorized over the (small) genre-matched subset.
+    subset = X_scaled[candidate_idx]
+    input_norm = float(np.linalg.norm(input_vec))
+    if input_norm == 0:
+        return None
+    subset_norms = np.linalg.norm(subset, axis=1)
+    safe_norms = np.where(subset_norms == 0, 1e-12, subset_norms)
+    similarities = (subset @ input_vec) / (safe_norms * input_norm)
+    distances = 1.0 - similarities
+
+    top_k = np.argpartition(distances, 10)[:10]
+    top_k = top_k[np.argsort(distances[top_k])]
+    return [(int(candidate_idx[i]), float(distances[i])) for i in top_k]

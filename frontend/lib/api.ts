@@ -5,6 +5,7 @@ export type Song = {
   similarity: number;
   features: Record<string, number>;
   release_year?: number | null;
+  genre?: string | null;
 };
 
 export type RecommendResponse = {
@@ -29,16 +30,11 @@ const API_URL =
 export async function fetchRecommendations(
   trackName: string,
   artistName: string,
-  maxYearDiff = 0,
 ): Promise<RecommendResponse> {
   const res = await fetch(`${API_URL}/api/recommend`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      track_name: trackName,
-      artist_name: artistName,
-      max_year_diff: maxYearDiff,
-    }),
+    body: JSON.stringify({ track_name: trackName, artist_name: artistName }),
   });
 
   if (!res.ok) {

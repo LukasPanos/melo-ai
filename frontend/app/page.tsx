@@ -17,16 +17,9 @@ export default function Home() {
   );
 }
 
-const ERA_OPTIONS: { label: string; value: number; hint: string }[] = [
-  { label: "Any era", value: 0, hint: "No year filter" },
-  { label: "Within 5 years", value: 5, hint: "Same musical era" },
-  { label: "Within 2 years", value: 2, hint: "Tight contemporaries" },
-];
-
 function HomeInner() {
   const [trackName, setTrackName] = useState("");
   const [artistName, setArtistName] = useState("");
-  const [maxYearDiff, setMaxYearDiff] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<RecommendResponse | null>(null);
@@ -40,11 +33,7 @@ function HomeInner() {
     setError(null);
     setData(null);
     try {
-      const res = await fetchRecommendations(
-        trackName.trim(),
-        artistName.trim(),
-        maxYearDiff,
-      );
+      const res = await fetchRecommendations(trackName.trim(), artistName.trim());
       setData(res);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
@@ -102,33 +91,10 @@ function HomeInner() {
               {loading ? "Searching…" : "Find Similar Songs"}
             </button>
           </div>
-          <div className="mt-4 flex flex-wrap items-center gap-2">
-            <span className="text-[10px] uppercase tracking-[0.25em] text-white/40 mr-2">
-              Era
-            </span>
-            {ERA_OPTIONS.map((opt) => {
-              const active = opt.value === maxYearDiff;
-              return (
-                <button
-                  key={opt.value}
-                  type="button"
-                  onClick={() => setMaxYearDiff(opt.value)}
-                  title={opt.hint}
-                  className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
-                    active
-                      ? "border-melo-neon/60 bg-melo-neon/15 text-white"
-                      : "border-white/10 bg-white/5 text-white/60 hover:border-white/20 hover:text-white/80"
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              );
-            })}
-          </div>
-
           <p className="text-xs text-white/40 mt-3">
-            Start typing a song — only tracks in the library will appear. Tap
-            the ▶ on any card for a 30-second preview.
+            Start typing a song — only tracks in the library will appear.
+            Recommendations stay within the song's genre family. Tap ▶ on any
+            card for a 30-second preview.
           </p>
         </form>
 

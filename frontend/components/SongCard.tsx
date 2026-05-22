@@ -52,6 +52,14 @@ export function SongCard({ song, rank, isInput }: Props) {
               </span>
             ) : null}
           </p>
+          {song.genre ? (
+            <span
+              className="mt-2 inline-block text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full bg-melo/15 text-melo-glow"
+              title={song.genre}
+            >
+              {song.genre}
+            </span>
+          ) : null}
         </div>
 
         <div className="shrink-0 flex flex-col items-end gap-2">
