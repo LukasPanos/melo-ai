@@ -46,6 +46,11 @@ export function SongCard({ song, rank, isInput }: Props) {
             title={song.artist}
           >
             {song.artist}
+            {song.release_year ? (
+              <span className="ml-2 text-white/30 font-mono text-[11px]">
+                · {song.release_year}
+              </span>
+            ) : null}
           </p>
         </div>
 

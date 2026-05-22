@@ -95,11 +95,16 @@ def main() -> None:
     out_cols = ["song_name", "artist"]
     if "popularity" in keep.columns:
         out_cols.append("popularity")
+    if "release_year" in keep.columns:
+        out_cols.append("release_year")
     out_cols += FEATURE_COLS
 
     out = keep[out_cols].copy()
     out["song_name"] = out["song_name"].astype(str)
     out["artist"] = out["artist"].astype(str)
+    if "release_year" in out.columns:
+        # Cast to a small int; some rows have NaN year, fill with 0 as sentinel.
+        out["release_year"] = out["release_year"].fillna(0).astype("int16")
 
     # Parquet is what the backend actually loads — small, fast, low memory.
     try:

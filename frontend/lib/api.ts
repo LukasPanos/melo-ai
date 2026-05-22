@@ -4,6 +4,7 @@ export type Song = {
   spotify_search_url: string;
   similarity: number;
   features: Record<string, number>;
+  release_year?: number | null;
 };
 
 export type RecommendResponse = {
@@ -28,11 +29,16 @@ const API_URL =
 export async function fetchRecommendations(
   trackName: string,
   artistName: string,
+  maxYearDiff = 0,
 ): Promise<RecommendResponse> {
   const res = await fetch(`${API_URL}/api/recommend`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ track_name: trackName, artist_name: artistName }),
+    body: JSON.stringify({
+      track_name: trackName,
+      artist_name: artistName,
+      max_year_diff: maxYearDiff,
+    }),
   });
 
   if (!res.ok) {
