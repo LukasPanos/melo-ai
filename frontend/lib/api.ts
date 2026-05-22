@@ -11,6 +11,16 @@ export type RecommendResponse = {
   recommendations: Song[];
 };
 
+export type SearchHit = {
+  name: string;
+  artist: string;
+  popularity: number;
+};
+
+export type SearchResponse = {
+  results: SearchHit[];
+};
+
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ||
   "http://127.0.0.1:8000";
@@ -36,5 +46,16 @@ export async function fetchRecommendations(
     throw new Error(detail);
   }
 
+  return res.json();
+}
+
+export async function searchSongs(
+  query: string,
+  signal?: AbortSignal,
+  limit = 10,
+): Promise<SearchResponse> {
+  const url = `${API_URL}/api/search?q=${encodeURIComponent(query)}&limit=${limit}`;
+  const res = await fetch(url, { signal });
+  if (!res.ok) throw new Error(`Search failed (${res.status})`);
   return res.json();
 }

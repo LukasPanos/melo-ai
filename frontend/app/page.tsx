@@ -3,6 +3,7 @@
 import { useState, FormEvent } from "react";
 import { fetchRecommendations, type RecommendResponse } from "@/lib/api";
 import { SongCard } from "@/components/SongCard";
+import { SongSearchInput } from "@/components/SongSearchInput";
 
 export default function Home() {
   const [trackName, setTrackName] = useState("");
@@ -52,13 +53,14 @@ export default function Home() {
           className="mx-auto max-w-3xl rounded-2xl border border-white/10 bg-ink-700/40 backdrop-blur-md p-4 sm:p-6 shadow-xl shadow-black/40"
         >
           <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-3">
-            <input
-              type="text"
-              required
+            <SongSearchInput
               value={trackName}
-              onChange={(e) => setTrackName(e.target.value)}
-              placeholder="Song name"
-              className="rounded-xl bg-ink-800/80 border border-white/10 px-4 py-3 text-white placeholder:text-white/30 focus:outline-none focus:border-melo focus:ring-2 focus:ring-melo/30 transition"
+              onChange={setTrackName}
+              onPick={(name, artist) => {
+                setTrackName(name);
+                setArtistName(artist);
+              }}
+              placeholder="Song name (try typing 'blind…')"
             />
             <input
               type="text"
@@ -76,8 +78,7 @@ export default function Home() {
             </button>
           </div>
           <p className="text-xs text-white/40 mt-3">
-            Songs must exist in the library — try "Welcome To New York (Taylor's
-            Version)" by Taylor Swift, or "Blinding Lights" by The Weeknd.
+            Start typing a song — only tracks in the library will appear.
           </p>
         </form>
 

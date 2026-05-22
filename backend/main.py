@@ -102,6 +102,16 @@ class RecommendResponse(BaseModel):
     recommendations: list[Song]
 
 
+class SearchHit(BaseModel):
+    name: str
+    artist: str
+    popularity: int
+
+
+class SearchResponse(BaseModel):
+    results: list[SearchHit]
+
+
 def _spotify_search_url(name: str, artist: str) -> str:
     q = urllib.parse.quote(f"{name} {artist}".strip())
     return f"https://open.spotify.com/search/{q}"
@@ -115,6 +125,33 @@ def _row_to_song(row: pd.Series, similarity: float) -> Song:
         similarity=round(float(similarity), 4),
         features={col: float(row[col]) for col in FEATURE_COLS},
     )
+
+
+@app.get("/api/search", response_model=SearchResponse)
+def search(q: str, limit: int = 10) -> SearchResponse:
+    df: pd.DataFrame = state["df"]
+
+    query = _normalize(q)
+    if len(query) < 2:
+        return SearchResponse(results=[])
+
+    limit = max(1, min(limit, 25))
+
+    mask = df["song_name_lower"].str.contains(query, regex=False, na=False)
+    candidates = df.loc[mask, ["song_name", "artist", "popularity"]]
+    if candidates.empty:
+        return SearchResponse(results=[])
+
+    top = candidates.sort_values("popularity", ascending=False).head(limit)
+    results = [
+        SearchHit(
+            name=str(row.song_name),
+            artist=str(row.artist),
+            popularity=int(row.popularity),
+        )
+        for row in top.itertuples(index=False)
+    ]
+    return SearchResponse(results=results)
 
 
 @app.get("/api/health")
