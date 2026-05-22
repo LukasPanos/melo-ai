@@ -1,6 +1,9 @@
 """Melo AI — FastAPI backend exposing a KNN song-recommendation model."""
 from __future__ import annotations
 
+import ctypes
+import ctypes.util
+import gc
 import urllib.parse
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -28,19 +31,44 @@ FEATURE_COLS = [
     "tempo",
 ]
 
-DATA_PATH = Path(__file__).resolve().parent.parent / "data" / "mainDB.csv"
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+
+
+def _pick_dataset() -> Path:
+    """Prefer the 500k CSV if present, fall back to the original 268k file."""
+    for candidate in (DATA_DIR / "mainDB_500k.csv", DATA_DIR / "mainDB.csv"):
+        if candidate.exists():
+            return candidate
+    raise RuntimeError("No dataset file found in data/")
+
+
+DATA_PATH = _pick_dataset()
 
 # Map curly/smart punctuation to ASCII so user input matches dataset entries.
 _PUNCT_NORMALIZE = str.maketrans({
     "‘": "'", "’": "'", "‚": "'", "‛": "'",
     "“": '"', "”": '"', "„": '"', "‟": '"',
     "–": "-", "—": "-", "―": "-",
-    " ": " ",
+    " ": " ",
 })
 
 
 def _normalize(text: str) -> str:
     return text.translate(_PUNCT_NORMALIZE).strip().lower()
+
+
+def _release_unused_memory() -> None:
+    """Ask glibc to hand freed memory back to the OS. No-op outside Linux."""
+    gc.collect()
+    libc_path = ctypes.util.find_library("c")
+    if not libc_path:
+        return
+    try:
+        libc = ctypes.CDLL(libc_path)
+        if hasattr(libc, "malloc_trim"):
+            libc.malloc_trim(0)
+    except OSError:
+        pass
 
 
 state: dict = {}
@@ -51,24 +79,70 @@ async def lifespan(_: FastAPI):
     if not DATA_PATH.exists():
         raise RuntimeError(f"Dataset not found at {DATA_PATH}")
 
-    # Only load the columns we need — keeps memory under Render's 512 MB free tier.
-    df = pd.read_csv(
+    available = pd.read_csv(DATA_PATH, nrows=0).columns
+    cols = ["song_name", "artist", *FEATURE_COLS]
+    if "popularity" in available:
+        cols.append("popularity")
+
+    # Chunked CSV load to bound peak working set during parsing.
+    feature_dtypes = {col: np.float32 for col in FEATURE_COLS}
+    chunks = []
+    for chunk in pd.read_csv(
         DATA_PATH,
-        usecols=["song_name", "artist", "popularity", *FEATURE_COLS],
+        usecols=cols,
+        dtype=feature_dtypes,
+        chunksize=100_000,
+    ):
+        chunk = chunk.dropna(subset=FEATURE_COLS + ["song_name", "artist"])
+        chunks.append(chunk)
+    df = pd.concat(chunks, ignore_index=True)
+    del chunks
+    gc.collect()
+
+    if "popularity" not in df.columns:
+        # The 500k Kaggle build has no popularity column. Derive a 0–100 rank
+        # from row order — the build script sorts by year desc, so this puts
+        # recent tracks at the top, which is what autocomplete should show.
+        ranks = 100 - (100 * np.arange(len(df), dtype=np.float32) / max(1, len(df) - 1))
+        df["popularity"] = ranks.astype(np.int16)
+    else:
+        df["popularity"] = df["popularity"].astype(np.int16)
+
+    # Convert the heavy string columns: Arrow-backed for song_name (high
+    # cardinality, ~3× less memory than Python object strings), Categorical
+    # for artist (heavy repeats compress to codes + lookup table).
+    df["song_name"] = df["song_name"].astype("string[pyarrow]")
+    df["artist"] = df["artist"].astype(str).astype("category")
+
+    # Precomputed lowercased name for /search and /recommend. Storing it
+    # explicitly costs ~40 MB but is cheaper than lazy lowercase: pandas
+    # holds onto temporary string buffers across requests, which inflates
+    # the process by 200+ MB under sustained traffic.
+    df["song_name_lower"] = (
+        df["song_name"].astype(str).map(_normalize).astype("string[pyarrow]")
     )
-    df = df.dropna(subset=FEATURE_COLS + ["song_name", "artist"]).reset_index(drop=True)
-    df["song_name_lower"] = df["song_name"].astype(str).map(_normalize)
-    df["artist_lower"] = df["artist"].astype(str).map(_normalize)
+
+    gc.collect()
 
     scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(df[FEATURE_COLS].astype(np.float32).to_numpy()).astype(np.float32)
+    X_scaled = scaler.fit_transform(df[FEATURE_COLS].to_numpy()).astype(np.float32)
 
     knn = NearestNeighbors(n_neighbors=11, metric="cosine", algorithm="brute")
     knn.fit(X_scaled)
 
+    # X_scaled now holds the model input; drop the per-row feature columns we
+    # don't need to return in the response. The frontend only renders bars for
+    # danceability/energy/valence/tempo — keeping just those saves ~14 MB.
+    display_features = {"danceability", "energy", "valence", "tempo"}
+    drop_features = [c for c in FEATURE_COLS if c not in display_features]
+    if drop_features:
+        df = df.drop(columns=drop_features)
+    _release_unused_memory()
+
     state["df"] = df
     state["X_scaled"] = X_scaled
     state["knn"] = knn
+    state["data_path"] = str(DATA_PATH.name)
     yield
     state.clear()
 
@@ -117,14 +191,25 @@ def _spotify_search_url(name: str, artist: str) -> str:
     return f"https://open.spotify.com/search/{q}"
 
 
+_DISPLAY_FEATURES = ("danceability", "energy", "valence", "tempo")
+
+
 def _row_to_song(row: pd.Series, similarity: float) -> Song:
     return Song(
         name=str(row["song_name"]),
         artist=str(row["artist"]),
         spotify_search_url=_spotify_search_url(str(row["song_name"]), str(row["artist"])),
         similarity=round(float(similarity), 4),
-        features={col: float(row[col]) for col in FEATURE_COLS},
+        features={col: float(row[col]) for col in _DISPLAY_FEATURES if col in row.index},
     )
+
+
+def _narrow_by_artist(df: pd.DataFrame, candidate_idx: np.ndarray, artist_q: str) -> np.ndarray:
+    """Filter candidate row indices to those whose normalized artist matches."""
+    if candidate_idx.size == 0 or not artist_q:
+        return candidate_idx
+    artists = df.loc[candidate_idx, "artist"].astype(str).map(_normalize).to_numpy()
+    return candidate_idx[artists == artist_q]
 
 
 @app.get("/api/search", response_model=SearchResponse)
@@ -160,6 +245,7 @@ def health() -> dict:
     return {
         "status": "ok",
         "dataset_size": int(0 if df is None else len(df)),
+        "source": state.get("data_path", ""),
     }
 
 
@@ -172,17 +258,15 @@ def recommend(req: RecommendRequest) -> RecommendResponse:
     name_q = _normalize(req.track_name)
     artist_q = _normalize(req.artist_name or "")
 
-    mask = df["song_name_lower"] == name_q
-    if artist_q:
-        mask = mask & (df["artist_lower"] == artist_q)
-    matches = df.index[mask].to_numpy()
+    exact_idx = df.index[df["song_name_lower"] == name_q].to_numpy()
+    matches = _narrow_by_artist(df, exact_idx, artist_q)
 
     if matches.size == 0:
-        # Fall back to "contains" so minor punctuation/casing differences still hit.
-        loose_mask = df["song_name_lower"].str.contains(name_q, regex=False, na=False)
-        if artist_q:
-            loose_mask = loose_mask & df["artist_lower"].str.contains(artist_q, regex=False, na=False)
-        matches = df.index[loose_mask].to_numpy()
+        # Loose substring fallback for minor punctuation/casing differences.
+        loose_idx = df.index[
+            df["song_name_lower"].str.contains(name_q, regex=False, na=False)
+        ].to_numpy()
+        matches = _narrow_by_artist(df, loose_idx, artist_q)
 
     if matches.size == 0:
         raise HTTPException(
@@ -190,9 +274,10 @@ def recommend(req: RecommendRequest) -> RecommendResponse:
             detail=f"'{req.track_name}' not found in the library. Try a different spelling.",
         )
 
-    # If multiple matches, prefer the most popular one.
-    if matches.size > 1 and "popularity" in df.columns:
-        popularities = df.loc[matches, "popularity"].astype(float).to_numpy()
+    # If multiple matches, prefer the most popular one (or most recent, when
+    # popularity was derived from row order).
+    if matches.size > 1:
+        popularities = df.loc[matches, "popularity"].to_numpy()
         idx = int(matches[int(np.argmax(popularities))])
     else:
         idx = int(matches[0])

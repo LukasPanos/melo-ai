@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Raw Kaggle source (1.2 GB) — regenerable, not committed
+data/tracks_features.csv
+
+# Optional parquet build artifact (regenerable from CSV)
+data/*.parquet
+
+# Editor / IDE noise
+.idea/
+.vscode/
